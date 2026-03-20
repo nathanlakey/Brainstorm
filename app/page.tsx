@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabase'
 import type { Project, Task, TaskStatus, TaskPriority } from '@/types'
 import { ThemeToggle } from '@/components/ThemeToggle'
@@ -73,6 +73,7 @@ export default function HomePage() {
   const [newTitle, setNewTitle] = useState('')
   const [newNotes, setNewNotes] = useState('')
   const [savingTask, setSavingTask] = useState(false)
+  const [taskError, setTaskError] = useState<string | null>(null)
 
   // Filter & sort
   const [filter, setFilter] = useState<'All' | TaskStatus>('All')
@@ -84,14 +85,15 @@ export default function HomePage() {
   // New task due date
   const [newDueDate, setNewDueDate] = useState('')
 
-  // Inline due-date editing
-  const [editingDueDateId, setEditingDueDateId] = useState<string | null>(null)
-  const dueDateInputRef = useRef<HTMLInputElement>(null)
-
-  // Inline editing
-  const [editingTaskId, setEditingTaskId] = useState<string | null>(null)
-  const [editingTitle, setEditingTitle] = useState('')
-  const editInputRef = useRef<HTMLInputElement>(null)
+  // Task expand / edit draft
+  const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null)
+  const [editDraft, setEditDraft] = useState({
+    title: '',
+    notes: '',
+    status: 'Idea' as TaskStatus,
+    priority: 'Medium' as TaskPriority,
+    due_date: '',
+  })
 
   const selectedProject = projects.find((p) => p.id === selectedId) ?? null
   const baseFiltered = filter === 'All' ? tasks : tasks.filter((t) => t.status === filter)
@@ -119,8 +121,7 @@ export default function HomePage() {
     if (!selectedId) { setTasks([]); return }
     setFilter('All')
     setSortByPriority(false)
-    setEditingTaskId(null)
-    setEditingDueDateId(null)
+    setExpandedTaskId(null)
     ;(async () => {
       setLoadingTasks(true)
       const { data } = await supabase
@@ -208,47 +209,39 @@ export default function HomePage() {
     await supabase.from('tasks').update({ priority: next }).eq('id', task.id)
   }
 
-  // ── Inline due-date editing ────────────────────────────────────
-  function handleStartEditDueDate(taskId: string) {
-    setEditingDueDateId(taskId)
-    setTimeout(() => dueDateInputRef.current?.focus(), 0)
-  }
-
-  async function handleSaveDueDate(taskId: string, value: string) {
-    setEditingDueDateId(null)
-    const due_date = value || null
-    setTasks((prev) =>
-      prev.map((t) => (t.id === taskId ? { ...t, due_date } : t)),
-    )
-    await supabase.from('tasks').update({ due_date }).eq('id', taskId)
-  }
-
   // ── Delete task ───────────────────────────────────────────────
   async function handleDeleteTask(id: string) {
     setTasks((prev) => prev.filter((t) => t.id !== id))
     await supabase.from('tasks').delete().eq('id', id)
   }
 
-  // ── Inline title editing ──────────────────────────────────────
-  function handleStartEdit(task: Task) {
-    setEditingTaskId(task.id)
-    setEditingTitle(task.title)
-    setTimeout(() => editInputRef.current?.focus(), 0)
+  // ── Expand / edit task ────────────────────────────────────────
+  function handleExpandTask(task: Task) {
+    if (expandedTaskId === task.id) { setExpandedTaskId(null); return }
+    setExpandedTaskId(task.id)
+    setEditDraft({
+      title: task.title,
+      notes: task.notes ?? '',
+      status: task.status,
+      priority: task.priority,
+      due_date: task.due_date ?? '',
+    })
   }
 
-  async function handleSaveTitle(taskId: string) {
-    const title = editingTitle.trim()
-    setEditingTaskId(null)
-    if (!title) return
+  async function handleSaveEdit(taskId: string) {
+    const updates = {
+      title: editDraft.title.trim(),
+      notes: editDraft.notes.trim() || null,
+      status: editDraft.status,
+      priority: editDraft.priority,
+      due_date: editDraft.due_date || null,
+    }
+    if (!updates.title) return
     setTasks((prev) =>
-      prev.map((t) => (t.id === taskId ? { ...t, title } : t)),
+      prev.map((t) => (t.id === taskId ? { ...t, ...updates } : t)),
     )
-    await supabase.from('tasks').update({ title }).eq('id', taskId)
-  }
-
-  function handleEditKeyDown(e: React.KeyboardEvent, taskId: string) {
-    if (e.key === 'Enter') { e.preventDefault(); handleSaveTitle(taskId) }
-    if (e.key === 'Escape') { setEditingTaskId(null) }
+    setExpandedTaskId(null)
+    await supabase.from('tasks').update(updates).eq('id', taskId)
   }
 
   // ── Render ────────────────────────────────────────────────────
@@ -397,6 +390,11 @@ export default function HomePage() {
                   className="resize-none rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-1.5 text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 focus:border-gray-500 dark:focus:border-gray-400 focus:outline-none disabled:opacity-50"
                 />
               </form>
+              {taskError && (
+                <p className="mt-2 rounded bg-red-50 dark:bg-red-900/20 px-3 py-2 text-xs text-red-600 dark:text-red-400 border border-red-200 dark:border-red-800">
+                  Error: {taskError}
+                </p>
+              )}
             </div>
 
             {/* Filter bar */}
@@ -454,142 +452,170 @@ export default function HomePage() {
                     : `No "${filter}" tasks.`}
                 </li>
               ) : (
-                filteredTasks.map((task) => (
-                  <li
-                    key={task.id}
-                    className="group flex items-start gap-3 px-6 py-3 hover:bg-gray-50 dark:hover:bg-gray-900/50"
-                  >
-                    {/* Text */}
-                    <div className="flex-1 min-w-0 pt-px">
-                      {editingTaskId === task.id ? (
-                        <input
-                          ref={editInputRef}
-                          type="text"
-                          value={editingTitle}
-                          onChange={(e) => setEditingTitle(e.target.value)}
-                          onBlur={() => handleSaveTitle(task.id)}
-                          onKeyDown={(e) => handleEditKeyDown(e, task.id)}
-                          className="w-full rounded border border-blue-300 dark:border-blue-600 bg-white dark:bg-gray-800 px-1.5 py-0.5 text-sm text-gray-900 dark:text-gray-100 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-100 dark:focus:ring-blue-900/30"
-                        />
-                      ) : (
-                        <p
-                          className="cursor-text text-sm text-gray-900 dark:text-gray-100 hover:text-gray-500 dark:hover:text-gray-400"
-                          onClick={() => handleStartEdit(task)}
-                          title="Click to edit title"
-                        >
-                          {task.title}
-                        </p>
-                      )}
-                      {task.notes && (
-                        <p className="mt-0.5 whitespace-pre-wrap text-xs text-gray-400">
-                          {task.notes}
-                        </p>
-                      )}
-                    </div>
+                filteredTasks.map((task) => {
+                  const isExpanded = expandedTaskId === task.id
+                  const done = task.status === 'Done' || task.status === 'Archived'
+                  const dueState = task.due_date ? (done ? 'future' : getDueDateState(task.due_date)) : null
+                  return (
+                    <li key={task.id} className="divide-y divide-gray-100 dark:divide-gray-800">
 
-                    {/* Due date badge */}
-                    {task.due_date && (() => {
-                      const done = task.status === 'Done' || task.status === 'Archived'
-                      const state = done ? 'future' : getDueDateState(task.due_date)
-
-                      const badgeClass =
-                        state === 'overdue'
-                          ? 'bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 border border-red-200 dark:border-red-800'
-                          : state === 'today'
-                            ? 'bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-amber-800'
-                            : 'bg-gray-50 dark:bg-gray-800 text-gray-400 dark:text-gray-500 border border-gray-200 dark:border-gray-700'
-
-                      if (editingDueDateId === task.id) {
-                        return (
-                          <input
-                            ref={dueDateInputRef}
-                            type="date"
-                            defaultValue={task.due_date}
-                            onBlur={(e) => handleSaveDueDate(task.id, e.target.value)}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter') handleSaveDueDate(task.id, (e.target as HTMLInputElement).value)
-                              if (e.key === 'Escape') setEditingDueDateId(null)
-                            }}
-                            className="shrink-0 rounded border border-blue-300 dark:border-blue-600 bg-white dark:bg-gray-800 px-1.5 py-0.5 text-xs text-gray-900 dark:text-gray-100 focus:outline-none"
-                          />
-                        )
-                      }
-
-                      return (
-                        <button
-                          onClick={() => handleStartEditDueDate(task.id)}
-                          title="Click to change due date"
-                          className={`shrink-0 flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium transition-colors cursor-pointer hover:opacity-80 ${badgeClass}`}
-                        >
-                          {state === 'overdue' && (
-                            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                              <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
-                              <line x1="12" y1="9" x2="12" y2="13"/>
-                              <line x1="12" y1="17" x2="12.01" y2="17"/>
-                            </svg>
-                          )}
-                          {state === 'today' ? 'Today' : formatDueDate(task.due_date)}
-                          {state === 'overdue' && ' — overdue'}
-                        </button>
-                      )
-                    })()}
-
-                    {/* No due date — show placeholder on hover so user can add one */}
-                    {!task.due_date && editingDueDateId !== task.id && (
-                      <button
-                        onClick={() => handleStartEditDueDate(task.id)}
-                        title="Set due date"
-                        className="shrink-0 rounded-full px-2 py-0.5 text-xs text-gray-300 dark:text-gray-700 opacity-0 group-hover:opacity-100 transition-opacity hover:text-gray-400 dark:hover:text-gray-500"
-                      >
-                        + due
-                      </button>
-                    )}
-                    {!task.due_date && editingDueDateId === task.id && (
-                      <input
-                        ref={dueDateInputRef}
-                        type="date"
-                        defaultValue=""
-                        onBlur={(e) => handleSaveDueDate(task.id, e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') handleSaveDueDate(task.id, (e.target as HTMLInputElement).value)
-                          if (e.key === 'Escape') setEditingDueDateId(null)
+                      {/* ── Main row ── */}
+                      <div
+                        className="group flex cursor-pointer items-start gap-3 px-6 py-3 hover:bg-gray-50 dark:hover:bg-gray-900/50"
+                        onClick={(e) => {
+                          if ((e.target as HTMLElement).closest('button')) return
+                          handleExpandTask(task)
                         }}
-                        className="shrink-0 rounded border border-blue-300 dark:border-blue-600 bg-white dark:bg-gray-800 px-1.5 py-0.5 text-xs text-gray-900 dark:text-gray-100 focus:outline-none"
-                      />
-                    )}
+                      >
+                        {/* Text */}
+                        <div className="flex-1 min-w-0 pt-px">
+                          <p className="text-sm text-gray-900 dark:text-gray-100">{task.title}</p>
+                          {task.notes && (
+                            <p className="mt-0.5 line-clamp-1 text-xs text-gray-400">{task.notes}</p>
+                          )}
+                        </div>
 
-                    {/* Priority badge — click to cycle */}
-                    <button
-                      onClick={() => handleCyclePriority(task)}
-                      title="Click to change priority"
-                      className={`shrink-0 cursor-pointer rounded-full px-2.5 py-0.5 text-xs font-medium transition-colors ${
-                        PRIORITY_BADGE[task.priority]
-                      }`}
-                    >
-                      {task.priority}
-                    </button>
+                        {/* Due date badge (display only) */}
+                        {task.due_date && dueState && (
+                          <span
+                            className={`shrink-0 flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium ${
+                              dueState === 'overdue'
+                                ? 'bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 border border-red-200 dark:border-red-800'
+                                : dueState === 'today'
+                                  ? 'bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-amber-800'
+                                  : 'bg-gray-50 dark:bg-gray-800 text-gray-400 dark:text-gray-500 border border-gray-200 dark:border-gray-700'
+                            }`}
+                          >
+                            {dueState === 'overdue' && (
+                              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                                <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                                <line x1="12" y1="9" x2="12" y2="13"/>
+                                <line x1="12" y1="17" x2="12.01" y2="17"/>
+                              </svg>
+                            )}
+                            {dueState === 'today' ? 'Today' : formatDueDate(task.due_date)}
+                            {dueState === 'overdue' && ' — overdue'}
+                          </span>
+                        )}
 
-                    {/* Status badge — click to cycle */}
-                    <button
-                      onClick={() => handleCycleStatus(task)}
-                      title="Click to advance status"
-                      className={`shrink-0 cursor-pointer rounded-full px-2.5 py-0.5 text-xs font-medium transition-colors ${
-                        STATUS_BADGE[task.status]
-                      }`}
-                    >
-                      {task.status}
-                    </button>
+                        {/* Priority badge — click to cycle */}
+                        <button
+                          onClick={() => handleCyclePriority(task)}
+                          title="Click to change priority"
+                          className={`shrink-0 cursor-pointer rounded-full px-2.5 py-0.5 text-xs font-medium transition-colors ${PRIORITY_BADGE[task.priority]}`}
+                        >
+                          {task.priority}
+                        </button>
 
-                    {/* Delete */}
-                    <button
-                      onClick={() => handleDeleteTask(task.id)}
-                      title="Delete task"
-                      className="shrink-0 pt-px text-gray-300 dark:text-gray-600 opacity-0 transition-opacity hover:text-red-400 group-hover:opacity-100"
-                    >
-                      ✕
-                    </button>
-                  </li>
-                ))
+                        {/* Status badge — click to cycle */}
+                        <button
+                          onClick={() => handleCycleStatus(task)}
+                          title="Click to advance status"
+                          className={`shrink-0 cursor-pointer rounded-full px-2.5 py-0.5 text-xs font-medium transition-colors ${STATUS_BADGE[task.status]}`}
+                        >
+                          {task.status}
+                        </button>
+
+                        {/* Delete */}
+                        <button
+                          onClick={() => handleDeleteTask(task.id)}
+                          title="Delete task"
+                          className="shrink-0 pt-px text-gray-300 dark:text-gray-600 opacity-0 transition-opacity hover:text-red-400 group-hover:opacity-100"
+                        >
+                          ✕
+                        </button>
+
+                        {/* Expand chevron */}
+                        <svg
+                          width="14" height="14" viewBox="0 0 24 24" fill="none"
+                          stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+                          className={`mt-0.5 shrink-0 text-gray-300 dark:text-gray-600 transition-transform duration-150 ${isExpanded ? 'rotate-180' : ''}`}
+                        >
+                          <polyline points="6 9 12 15 18 9"/>
+                        </svg>
+                      </div>
+
+                      {/* ── Edit panel ── */}
+                      {isExpanded && (
+                        <div className="bg-gray-50 dark:bg-gray-900/60 px-6 py-4">
+                          <div className="flex flex-col gap-3">
+                            <input
+                              type="text"
+                              value={editDraft.title}
+                              onChange={(e) => setEditDraft((d) => ({ ...d, title: e.target.value }))}
+                              onKeyDown={(e) => { if (e.key === 'Escape') setExpandedTaskId(null) }}
+                              autoFocus
+                              placeholder="Title"
+                              className="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-1.5 text-sm font-medium text-gray-900 dark:text-gray-100 focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-100 dark:focus:ring-blue-900/30"
+                            />
+                            <textarea
+                              value={editDraft.notes}
+                              onChange={(e) => setEditDraft((d) => ({ ...d, notes: e.target.value }))}
+                              placeholder="Notes…"
+                              rows={3}
+                              className="resize-none rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-1.5 text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-100 dark:focus:ring-blue-900/30"
+                            />
+                            <div className="flex flex-wrap items-center gap-4">
+                              <div className="flex items-center gap-1.5">
+                                <label className="text-xs text-gray-500 dark:text-gray-400">Status</label>
+                                <select
+                                  value={editDraft.status}
+                                  onChange={(e) => setEditDraft((d) => ({ ...d, status: e.target.value as TaskStatus }))}
+                                  className="rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-sm text-gray-900 dark:text-gray-100 focus:outline-none"
+                                >
+                                  {STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
+                                </select>
+                              </div>
+                              <div className="flex items-center gap-1.5">
+                                <label className="text-xs text-gray-500 dark:text-gray-400">Priority</label>
+                                <select
+                                  value={editDraft.priority}
+                                  onChange={(e) => setEditDraft((d) => ({ ...d, priority: e.target.value as TaskPriority }))}
+                                  className="rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-sm text-gray-900 dark:text-gray-100 focus:outline-none"
+                                >
+                                  <option value="High">High</option>
+                                  <option value="Medium">Medium</option>
+                                  <option value="Low">Low</option>
+                                </select>
+                              </div>
+                              <div className="flex items-center gap-1.5">
+                                <label className="text-xs text-gray-500 dark:text-gray-400">Due</label>
+                                <input
+                                  type="date"
+                                  value={editDraft.due_date}
+                                  onChange={(e) => setEditDraft((d) => ({ ...d, due_date: e.target.value }))}
+                                  className="rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-sm text-gray-900 dark:text-gray-100 focus:outline-none"
+                                />
+                                {editDraft.due_date && (
+                                  <button
+                                    onClick={() => setEditDraft((d) => ({ ...d, due_date: '' }))}
+                                    title="Clear due date"
+                                    className="text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                                  >✕</button>
+                                )}
+                              </div>
+                            </div>
+                            <div className="flex gap-2">
+                              <button
+                                onClick={() => handleSaveEdit(task.id)}
+                                disabled={!editDraft.title.trim()}
+                                className="rounded bg-gray-900 dark:bg-gray-100 px-3 py-1.5 text-xs font-medium text-white dark:text-gray-900 hover:bg-gray-700 dark:hover:bg-white disabled:opacity-40"
+                              >
+                                Save
+                              </button>
+                              <button
+                                onClick={() => setExpandedTaskId(null)}
+                                className="rounded border border-gray-200 dark:border-gray-700 px-3 py-1.5 text-xs font-medium text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </li>
+                  )
+                })
               )}
             </ul>
           </>
